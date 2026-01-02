@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl git build-essential ca-certificates gnupg \
     python3 python3-pip python3-venv \
-    php php-cli php-xml php-mbstring php-curl composer \
+    php php-cli php-xml php-mbstring php-curl php-zip php-intl php-gd php-bcmath composer \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20
