@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/jordanpartridge/agentctl/pkg/container"
 )
@@ -122,6 +123,63 @@ func main() {
 		}
 		container.Shell(os.Args[2])
 
+	case "diagnose":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: agentctl diagnose <name>")
+			os.Exit(1)
+		}
+		info, err := container.Diagnose(os.Args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("🔍 Agent Diagnostics")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		// Claude status
+		if info.ClaudeRunning {
+			fmt.Println("🤖 Claude: Running")
+		} else {
+			fmt.Println("🤖 Claude: Not running")
+		}
+		fmt.Println()
+
+		// Auth files
+		fmt.Println("🔐 Auth Files:")
+		for file, exists := range info.AuthFiles {
+			if exists {
+				fmt.Printf("   ✅ %s exists\n", file)
+			} else {
+				fmt.Printf("   ❌ %s missing\n", file)
+			}
+		}
+		fmt.Println()
+
+		// Available tools
+		fmt.Println("🛠️  Available Tools:")
+		fmt.Printf("   %s\n", strings.Join(info.AvailableTools, ", "))
+		fmt.Println()
+
+		// Disk space
+		fmt.Println("💾 Disk Space:")
+		for _, line := range strings.Split(info.DiskSpace, "\n") {
+			fmt.Printf("   %s\n", line)
+		}
+		fmt.Println()
+
+		// Running processes
+		fmt.Println("📋 Running Processes:")
+		for _, line := range strings.Split(info.Processes, "\n") {
+			fmt.Printf("   %s\n", line)
+		}
+		fmt.Println()
+
+		// Error logs
+		fmt.Println("📜 Last 20 Lines of Error Logs:")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println(info.ErrorLogs)
+
 	default:
 		printUsage()
 	}
@@ -138,6 +196,7 @@ func printUsage() {
 	fmt.Println("  status <name>                   Show agent details")
 	fmt.Println("  logs <name>                     Show Claude logs from agent")
 	fmt.Println("  shell <name>                    Open shell in agent container")
+	fmt.Println("  diagnose <name>                 Debug stuck agents (processes, logs, auth)")
 	fmt.Println("  kill <name>                     Stop and remove agent")
 	fmt.Println()
 	fmt.Println("Example:")
