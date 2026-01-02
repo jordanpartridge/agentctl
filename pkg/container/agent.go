@@ -169,6 +169,62 @@ func Shell(name string) error {
 	return cmd.Run()
 }
 
+// DiagnoseInfo contains diagnostic information about an agent
+type DiagnoseInfo struct {
+	Processes      string
+	ClaudeRunning  bool
+	ErrorLogs      string
+	AuthFiles      map[string]bool
+	DiskSpace      string
+	AvailableTools []string
+}
+
+// Diagnose collects diagnostic information to help debug stuck agents
+func Diagnose(name string) (*DiagnoseInfo, error) {
+	info := &DiagnoseInfo{
+		AuthFiles: make(map[string]bool),
+	}
+
+	// Get running processes
+	out, _ := exec.Command("podman", "exec", name, "ps", "aux").Output()
+	info.Processes = strings.TrimSpace(string(out))
+
+	// Check if Claude is running
+	out, _ = exec.Command("podman", "exec", name, "sh", "-c",
+		"ps aux 2>/dev/null | grep -v grep | grep claude || true").Output()
+	info.ClaudeRunning = len(strings.TrimSpace(string(out))) > 0
+
+	// Get last 20 lines of error logs
+	out, _ = exec.Command("podman", "exec", name, "sh", "-c",
+		"tail -20 /home/agent/claude.log 2>/dev/null || echo 'No log file found'").Output()
+	info.ErrorLogs = strings.TrimSpace(string(out))
+
+	// Check if auth files exist
+	authChecks := map[string]string{
+		".claude.json": "/home/agent/.claude.json",
+		".claude/":     "/home/agent/.claude",
+	}
+	for label, path := range authChecks {
+		err := exec.Command("podman", "exec", name, "test", "-e", path).Run()
+		info.AuthFiles[label] = err == nil
+	}
+
+	// Get disk space
+	out, _ = exec.Command("podman", "exec", name, "df", "-h", "/home/agent").Output()
+	info.DiskSpace = strings.TrimSpace(string(out))
+
+	// Check available tools
+	tools := []string{"claude", "git", "gh", "node", "npm", "go", "python3", "cargo"}
+	for _, tool := range tools {
+		err := exec.Command("podman", "exec", name, "which", tool).Run()
+		if err == nil {
+			info.AvailableTools = append(info.AvailableTools, tool)
+		}
+	}
+
+	return info, nil
+}
+
 func agentDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".agentctl", "agents")
