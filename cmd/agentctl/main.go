@@ -110,10 +110,26 @@ func main() {
 
 	case "logs":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: agentctl logs <name>")
+			fmt.Println("Usage: agentctl logs [-f] <name>")
 			os.Exit(1)
 		}
-		container.Logs(os.Args[2])
+		// Check for -f flag
+		if os.Args[2] == "-f" {
+			if len(os.Args) < 4 {
+				fmt.Println("Usage: agentctl logs -f <name>")
+				os.Exit(1)
+			}
+			container.LogsFollow(os.Args[3])
+		} else {
+			container.Logs(os.Args[2])
+		}
+
+	case "watch":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: agentctl watch <name>")
+			os.Exit(1)
+		}
+		container.Watch(os.Args[2])
 
 	case "shell":
 		if len(os.Args) < 3 {
@@ -136,13 +152,15 @@ func printUsage() {
 	fmt.Println("  check <name>                    Check if agent's task is complete")
 	fmt.Println("  list                            List all agents with status")
 	fmt.Println("  status <name>                   Show agent details")
-	fmt.Println("  logs <name>                     Show Claude logs from agent")
+	fmt.Println("  logs [-f] <name>                Show Claude logs (-f to follow in real-time)")
+	fmt.Println("  watch <name>                    Stream Claude's activity in real-time")
 	fmt.Println("  shell <name>                    Open shell in agent container")
 	fmt.Println("  kill <name>                     Stop and remove agent")
 	fmt.Println()
 	fmt.Println("Example:")
 	fmt.Println("  agentctl spawn fix-bug https://github.com/user/repo feature-branch")
 	fmt.Println("  agentctl run fix-bug 'Fix the failing tests in src/auth.go'")
+	fmt.Println("  agentctl watch fix-bug")
 	fmt.Println("  agentctl check fix-bug")
 	fmt.Println("  agentctl kill fix-bug")
 }
