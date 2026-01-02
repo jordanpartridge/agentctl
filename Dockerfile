@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv \
     php php-cli php-xml php-mbstring php-curl php-zip php-intl php-gd php-bcmath composer \
     php-dev php-pear \
-    && pecl install pcov \
+    && pecl install pcov-1.0.12 \
     && echo "extension=pcov.so" > /etc/php/8.1/mods-available/pcov.ini \
     && ln -s /etc/php/8.1/mods-available/pcov.ini /etc/php/8.1/cli/conf.d/20-pcov.ini \
     && rm -rf /var/lib/apt/lists/*
