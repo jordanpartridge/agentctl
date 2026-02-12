@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/jordanpartridge/agentctl/pkg/coordination"
 )
 
 type TaskResult struct {
@@ -23,7 +25,9 @@ type AgentStatus struct {
 }
 
 // RunUntilDone keeps the agent working until the task is complete
-// This implements the "Ralph Wiggum" pattern - persistent retry until success
+// This implements the "Ralph Wiggum" pattern - persistent retry until success.
+// When a repoURL is available (via agent metadata), it integrates with the
+// coordination bus to update state and check for rebase_needed signals.
 func RunUntilDone(name string, task string, maxAttempts int) (*TaskResult, error) {
 	result := &TaskResult{}
 
@@ -31,9 +35,35 @@ func RunUntilDone(name string, task string, maxAttempts int) (*TaskResult, error
 		maxAttempts = 10 // default
 	}
 
+	// Look up agent metadata for coordination integration
+	var repoURL string
+	if agent, err := loadAgent(name); err == nil && agent.Repo != "" {
+		repoURL = agent.Repo
+		// Initialize coordination directory
+		if _, err := coordination.Init(repoURL); err != nil {
+			fmt.Printf("⚠️  Coordination init failed (continuing without): %v\n", err)
+			repoURL = "" // disable coordination
+		}
+	}
+
+	loopStart := time.Now()
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result.Attempts = attempt
 		fmt.Printf("\n🔄 Attempt %d/%d\n", attempt, maxAttempts)
+
+		// Update coordination state
+		if repoURL != "" {
+			coordination.UpdateAgentState(repoURL, name, "working", "")
+		}
+
+		// Check for rebase_needed signals from other agents
+		if repoURL != "" {
+			if needsRebase, _ := coordination.HasRebaseNeeded(repoURL, name, loopStart); needsRebase {
+				fmt.Printf("⚠️  Rebase needed signal detected, adding to prompt\n")
+				task = task + "\n\nIMPORTANT: Another agent has pushed changes. Run 'git pull --rebase' before continuing."
+			}
+		}
 
 		// Build the prompt - include context from previous attempts
 		prompt := task
@@ -70,12 +100,23 @@ Keep going until tests pass and all changes are committed.`,
 		if result.TestsPassed && !result.HasChanges {
 			result.Completed = true
 			fmt.Printf("✅ Task completed!\n")
+
+			// Update coordination state to done and release all claims
+			if repoURL != "" {
+				coordination.UpdateAgentState(repoURL, name, "done", "")
+				coordination.ReleaseAllForAgent(repoURL, name)
+			}
 			return result, nil
 		}
 
 		// Not done, loop continues
 		fmt.Printf("⏳ Not done yet, continuing...\n")
 		time.Sleep(3 * time.Second)
+	}
+
+	// Update coordination state on failure
+	if repoURL != "" {
+		coordination.UpdateAgentState(repoURL, name, "blocked", "")
 	}
 
 	result.Error = "max attempts reached"

@@ -5,8 +5,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jordanpartridge/agentctl/pkg/container"
+	"github.com/jordanpartridge/agentctl/pkg/coordination"
 )
 
 func main() {
@@ -196,6 +198,178 @@ func main() {
 		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		fmt.Println(info.ErrorLogs)
 
+	case "claim":
+		// Claim a file: agentctl claim <agent> <repo-url> <file>
+		if len(os.Args) < 5 {
+			fmt.Println("Usage: agentctl claim <agent> <repo-url> <file>")
+			os.Exit(1)
+		}
+		agentName := os.Args[2]
+		repoURL := os.Args[3]
+		filePath := os.Args[4]
+
+		// Initialize coordination dir
+		if _, err := coordination.Init(repoURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing coordination: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := coordination.ClaimFile(repoURL, agentName, filePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Claim failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Claimed %s for agent %s\n", filePath, agentName)
+
+	case "release":
+		// Release a file: agentctl release <agent> <repo-url> <file>
+		if len(os.Args) < 5 {
+			fmt.Println("Usage: agentctl release <agent> <repo-url> <file>")
+			os.Exit(1)
+		}
+		agentName := os.Args[2]
+		repoURL := os.Args[3]
+		filePath := os.Args[4]
+
+		if err := coordination.ReleaseFile(repoURL, agentName, filePath); err != nil {
+			fmt.Fprintf(os.Stderr, "Release failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Released %s from agent %s\n", filePath, agentName)
+
+	case "notify":
+		// Send a notification: agentctl notify <agent> <repo-url> <type> [key=value...]
+		if len(os.Args) < 5 {
+			fmt.Println("Usage: agentctl notify <agent> <repo-url> <type> [key=value...]")
+			fmt.Println("  Types: committed, pushed, pr_created, merged, rebase_needed")
+			os.Exit(1)
+		}
+		agentName := os.Args[2]
+		repoURL := os.Args[3]
+		msgType := coordination.MessageType(os.Args[4])
+
+		// Parse optional key=value data
+		data := make(map[string]string)
+		for _, arg := range os.Args[5:] {
+			parts := strings.SplitN(arg, "=", 2)
+			if len(parts) == 2 {
+				data[parts[0]] = parts[1]
+			}
+		}
+
+		// Initialize coordination dir
+		if _, err := coordination.Init(repoURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing coordination: %v\n", err)
+			os.Exit(1)
+		}
+
+		msg := coordination.Message{
+			Type:  msgType,
+			Agent: agentName,
+			Data:  data,
+		}
+		if err := coordination.Publish(repoURL, msg); err != nil {
+			fmt.Fprintf(os.Stderr, "Notify failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Published %s from agent %s\n", msgType, agentName)
+
+	case "bus":
+		// Show bus state: agentctl bus <repo-url> [--claims] [--messages] [--state]
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: agentctl bus <repo-url> [--claims] [--messages] [--state]")
+			os.Exit(1)
+		}
+		repoURL := os.Args[2]
+
+		// Parse flags
+		showClaims := false
+		showMessages := false
+		showState := false
+		for _, arg := range os.Args[3:] {
+			switch arg {
+			case "--claims":
+				showClaims = true
+			case "--messages":
+				showMessages = true
+			case "--state":
+				showState = true
+			}
+		}
+		// If no specific flags, show everything
+		if !showClaims && !showMessages && !showState {
+			showClaims = true
+			showMessages = true
+			showState = true
+		}
+
+		// Initialize coordination dir
+		if _, err := coordination.Init(repoURL); err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing coordination: %v\n", err)
+			os.Exit(1)
+		}
+
+		if showClaims {
+			fmt.Println("File Claims:")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			claims, err := coordination.ListClaims(repoURL)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+			} else if len(claims) == 0 {
+				fmt.Println("  (no active claims)")
+			} else {
+				for file, claim := range claims {
+					fmt.Printf("  %-40s  %s (since %s)\n", file, claim.Agent, claim.ClaimedAt.Format(time.RFC3339))
+				}
+			}
+			fmt.Println()
+		}
+
+		if showMessages {
+			fmt.Println("Recent Messages:")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			msgs, err := coordination.ReadMessages(repoURL)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+			} else if len(msgs) == 0 {
+				fmt.Println("  (no messages)")
+			} else {
+				// Show last 20 messages
+				start := 0
+				if len(msgs) > 20 {
+					start = len(msgs) - 20
+				}
+				for _, msg := range msgs[start:] {
+					dataStr := ""
+					if len(msg.Data) > 0 {
+						pairs := make([]string, 0, len(msg.Data))
+						for k, v := range msg.Data {
+							pairs = append(pairs, k+"="+v)
+						}
+						dataStr = " " + strings.Join(pairs, " ")
+					}
+					fmt.Printf("  [%s] %-15s %-15s%s\n",
+						msg.Timestamp.Format("15:04:05"), msg.Type, msg.Agent, dataStr)
+				}
+			}
+			fmt.Println()
+		}
+
+		if showState {
+			fmt.Println("Agent State:")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			state, err := coordination.GetState(repoURL)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
+			} else if len(state.Agents) == 0 {
+				fmt.Println("  (no agents registered)")
+			} else {
+				for _, agent := range state.Agents {
+					fmt.Printf("  %-15s status=%-10s branch=%-20s updated=%s\n",
+						agent.Name, agent.Status, agent.Branch, agent.LastUpdate.Format(time.RFC3339))
+				}
+			}
+		}
+
 	default:
 		printUsage()
 	}
@@ -216,10 +390,21 @@ func printUsage() {
 	fmt.Println("  diagnose <name>                 Debug stuck agents (processes, logs, auth)")
 	fmt.Println("  kill <name>                     Stop and remove agent")
 	fmt.Println()
+	fmt.Println("Coordination:")
+	fmt.Println("  claim <agent> <repo-url> <file>             Claim a file for editing")
+	fmt.Println("  release <agent> <repo-url> <file>           Release a file claim")
+	fmt.Println("  notify <agent> <repo-url> <type> [k=v...]   Publish a coordination message")
+	fmt.Println("  bus <repo-url> [--claims|--messages|--state] Show coordination bus state")
+	fmt.Println()
 	fmt.Println("Example:")
 	fmt.Println("  agentctl spawn fix-bug https://github.com/user/repo feature-branch")
 	fmt.Println("  agentctl run fix-bug 'Fix the failing tests in src/auth.go'")
 	fmt.Println("  agentctl watch fix-bug")
 	fmt.Println("  agentctl check fix-bug")
 	fmt.Println("  agentctl kill fix-bug")
+	fmt.Println()
+	fmt.Println("Coordination Example:")
+	fmt.Println("  agentctl claim agent-1 https://github.com/user/repo src/main.go")
+	fmt.Println("  agentctl notify agent-1 https://github.com/user/repo committed sha=abc123")
+	fmt.Println("  agentctl bus https://github.com/user/repo")
 }
