@@ -125,12 +125,39 @@ func main() {
 			container.Logs(os.Args[2])
 		}
 
-	case "watch":
+	case "spy":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: agentctl watch <name>")
+			fmt.Println("Usage: agentctl spy <name> [--raw] [--tools] [--thinking] [--verbose] [--json]")
 			os.Exit(1)
 		}
-		container.Watch(os.Args[2])
+		name := ""
+		opts := container.SpyOptions{}
+		for _, arg := range os.Args[2:] {
+			switch arg {
+			case "--raw":
+				opts.Raw = true
+			case "--tools":
+				opts.ToolsOnly = true
+			case "--thinking":
+				opts.Thinking = true
+			case "--verbose":
+				opts.Verbose = true
+			case "--json":
+				opts.JSON = true
+			default:
+				if !strings.HasPrefix(arg, "--") {
+					name = arg
+				}
+			}
+		}
+		if name == "" {
+			fmt.Println("Usage: agentctl spy <name> [--raw] [--tools] [--thinking] [--verbose] [--json]")
+			os.Exit(1)
+		}
+		if err := container.Spy(name, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "shell":
 		if len(os.Args) < 3 {
@@ -211,7 +238,7 @@ func printUsage() {
 	fmt.Println("  list                            List all agents with status")
 	fmt.Println("  status <name>                   Show agent details")
 	fmt.Println("  logs [-f] <name>                Show Claude logs (-f to follow in real-time)")
-	fmt.Println("  watch <name>                    Stream Claude's activity in real-time")
+	fmt.Println("  spy <name> [flags]              Stream Claude's real-time session activity")
 	fmt.Println("  shell <name>                    Open shell in agent container")
 	fmt.Println("  diagnose <name>                 Debug stuck agents (processes, logs, auth)")
 	fmt.Println("  kill <name>                     Stop and remove agent")
@@ -219,7 +246,7 @@ func printUsage() {
 	fmt.Println("Example:")
 	fmt.Println("  agentctl spawn fix-bug https://github.com/user/repo feature-branch")
 	fmt.Println("  agentctl run fix-bug 'Fix the failing tests in src/auth.go'")
-	fmt.Println("  agentctl watch fix-bug")
+	fmt.Println("  agentctl spy fix-bug")
 	fmt.Println("  agentctl check fix-bug")
 	fmt.Println("  agentctl kill fix-bug")
 }

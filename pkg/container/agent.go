@@ -153,13 +153,6 @@ func LogsFollow(name string) error {
 	return cmd.Run()
 }
 
-// Watch streams Claude's activity in real-time (alias for LogsFollow)
-func Watch(name string) error {
-	fmt.Printf("Watching agent %s (Ctrl+C to stop)...\n", name)
-	fmt.Println("---")
-	return LogsFollow(name)
-}
-
 // Shell opens an interactive shell in the agent container
 func Shell(name string) error {
 	cmd := exec.Command("podman", "exec", "-it", name, "/bin/bash")
