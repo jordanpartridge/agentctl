@@ -42,4 +42,26 @@ WORKDIR /home/agent
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/agent/.cargo/bin:${PATH}"
 
+# Pre-warm package manager caches
+# Composer: initialize global cache directory
+RUN mkdir -p /home/agent/.cache/composer \
+    && COMPOSER_CACHE_DIR=/home/agent/.cache/composer composer global require --no-interaction --no-plugins 2>/dev/null || true
+
+# npm: initialize global cache directory
+RUN mkdir -p /home/agent/.cache/npm \
+    && npm config set cache /home/agent/.cache/npm
+
+# Go: initialize module cache directory
+RUN mkdir -p /home/agent/.cache/go-mod
+
+# pip: initialize cache directory
+RUN mkdir -p /home/agent/.cache/pip
+
+# Set environment variables for cache directories
+ENV COMPOSER_CACHE_DIR="/home/agent/.cache/composer"
+ENV npm_config_cache="/home/agent/.cache/npm"
+ENV GOPATH="/home/agent/go"
+ENV GOMODCACHE="/home/agent/.cache/go-mod"
+ENV PIP_CACHE_DIR="/home/agent/.cache/pip"
+
 CMD ["sleep", "infinity"]
