@@ -88,20 +88,37 @@ func main() {
 		container.Kill(os.Args[2])
 
 	case "list":
-		agents, _ := container.List()
+		agents, err := container.ListWithState()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		if len(agents) == 0 {
 			fmt.Println("No agents")
 			return
 		}
 		for _, a := range agents {
-			status := container.CheckCompletion(a.Name)
 			indicator := "⏳"
-			if status.TestStatus == "pass" && !status.HasUncommitted {
-				indicator = "✅"
-			} else if status.ClaudeRunning {
+			label := string(a.Lifecycle)
+			switch a.Lifecycle {
+			case container.StateActive:
 				indicator = "🔄"
+			case container.StateCompleted:
+				indicator = "✅"
+				label = "completed"
+			case container.StateExited:
+				indicator = "💀"
+				label = "exited"
+			case container.StateStopped:
+				indicator = "🔌"
+				label = "stopped"
 			}
-			fmt.Printf("%s %-15s %-12s port:%-5d %s\n", indicator, a.Name, a.ContainerID[:12], a.Port, a.Status)
+			age := formatDuration(a.Age)
+			cid := a.ContainerID
+			if len(cid) > 12 {
+				cid = cid[:12]
+			}
+			fmt.Printf("%s %-15s %-12s %-12s port:%-5d %s\n", indicator, a.Name, label, cid, a.Port, age)
 		}
 
 	case "status":
@@ -397,9 +414,93 @@ func main() {
 			}
 		}
 
+	case "prune":
+		// Remove all exited/stopped containers, preserving history
+		pruned, err := container.Prune()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(pruned) == 0 {
+			fmt.Println("Nothing to prune")
+		} else {
+			for _, name := range pruned {
+				fmt.Printf("Pruned: %s\n", name)
+			}
+			fmt.Printf("Removed %d agent(s)\n", len(pruned))
+		}
+
+	case "cleanup":
+		// Remove completed agents past grace period
+		gracePeriod := container.DefaultGracePeriod
+		if len(os.Args) > 2 {
+			if d, err := time.ParseDuration(os.Args[2]); err == nil {
+				gracePeriod = d
+			}
+		}
+		cleaned, err := container.CleanupCompleted(gracePeriod)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		stale, err := container.CleanupStale(gracePeriod)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		total := append(cleaned, stale...)
+		if len(total) == 0 {
+			fmt.Printf("No agents older than %s to clean up\n", gracePeriod)
+		} else {
+			for _, name := range total {
+				fmt.Printf("Cleaned: %s\n", name)
+			}
+			fmt.Printf("Removed %d agent(s)\n", len(total))
+		}
+
+	case "history":
+		// Show agent history
+		records, err := container.ListHistory()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(records) == 0 {
+			fmt.Println("No agent history")
+			return
+		}
+		for _, h := range records {
+			indicator := "✅"
+			if h.Result == "failed" || h.Result == "stale" {
+				indicator = "❌"
+			} else if h.Result == "killed" || h.Result == "pruned" {
+				indicator = "🗑️"
+			}
+			age := formatDuration(time.Since(h.CompletedAt))
+			fmt.Printf("%s %-15s %-10s %-10s %s\n", indicator, h.Name, h.Result, age, h.Repo)
+			if h.Metadata != nil {
+				for k, v := range h.Metadata {
+					fmt.Printf("   %s: %s\n", k, v)
+				}
+			}
+		}
+
 	default:
 		printUsage()
 	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 func printUsage() {
@@ -409,13 +510,18 @@ func printUsage() {
 	fmt.Println("  spawn <name> <repo> [branch]    Create new agent container")
 	fmt.Println("  run <name> <task> [attempts]    Run until task complete (Ralph Wiggum mode)")
 	fmt.Println("  check <name>                    Check if agent's task is complete")
-	fmt.Println("  list                            List all agents with status")
+	fmt.Println("  list                            List all agents with lifecycle status")
 	fmt.Println("  status <name>                   Show agent details")
 	fmt.Println("  logs [-f] <name>                Show Claude logs (-f to follow in real-time)")
 	fmt.Println("  spy <name> [flags]              Stream Claude's real-time session activity")
 	fmt.Println("  shell <name>                    Open shell in agent container")
 	fmt.Println("  diagnose <name>                 Debug stuck agents (processes, logs, auth)")
 	fmt.Println("  kill <name>                     Stop and remove agent")
+	fmt.Println()
+	fmt.Println("Lifecycle:")
+	fmt.Println("  prune                           Remove all exited/stopped containers")
+	fmt.Println("  cleanup [grace-period]           Remove completed/stale agents past grace period")
+	fmt.Println("  history                          Show history of removed agents")
 	fmt.Println()
 	fmt.Println("Coordination:")
 	fmt.Println("  claim <agent> <repo-url> <file>             Claim a file for editing")
@@ -429,6 +535,11 @@ func printUsage() {
 	fmt.Println("  agentctl spy fix-bug")
 	fmt.Println("  agentctl check fix-bug")
 	fmt.Println("  agentctl kill fix-bug")
+	fmt.Println()
+	fmt.Println("Lifecycle Example:")
+	fmt.Println("  agentctl prune                              Remove dead containers")
+	fmt.Println("  agentctl cleanup 30m                        Cleanup agents older than 30 minutes")
+	fmt.Println("  agentctl history                            View past agent results")
 	fmt.Println()
 	fmt.Println("Coordination Example:")
 	fmt.Println("  agentctl claim agent-1 https://github.com/user/repo src/main.go")
