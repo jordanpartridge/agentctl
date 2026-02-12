@@ -106,6 +106,17 @@ Keep going until tests pass and all changes are committed.`,
 				coordination.UpdateAgentState(repoURL, name, "done", "")
 				coordination.ReleaseAllForAgent(repoURL, name)
 			}
+
+			// Save completion history for eventual cleanup
+			SaveHistory(&AgentHistory{
+				Name:        name,
+				Repo:        repoURL,
+				Created:     loopStart,
+				CompletedAt: time.Now(),
+				Result:      "success",
+				Attempts:    attempt,
+			})
+
 			return result, nil
 		}
 
