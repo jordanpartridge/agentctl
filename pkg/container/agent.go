@@ -22,10 +22,37 @@ type Agent struct {
 	Intent      string    `json:"intent,omitempty"`
 }
 
+// cacheDir returns the path to the shared cache directory on the host
+func cacheDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".agentctl", "cache")
+}
+
+// ensureCacheDirs creates the shared cache directories on the host if they don't exist
+func ensureCacheDirs() error {
+	dirs := []string{
+		"composer",
+		"npm",
+		"go-mod",
+		"pip",
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(cacheDir(), d), 0755); err != nil {
+			return fmt.Errorf("failed to create cache dir %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
 // Spawn creates a new agent container with the given repo cloned
 func Spawn(name, repo, branch string) (*Agent, error) {
 	rand.Seed(time.Now().UnixNano())
 	port := 8000 + rand.Intn(1000)
+
+	// Ensure shared cache directories exist on host
+	if err := ensureCacheDirs(); err != nil {
+		return nil, fmt.Errorf("cache setup failed: %w", err)
+	}
 
 	// Get GitHub token from environment or gh CLI
 	ghToken := os.Getenv("GH_TOKEN")
@@ -36,11 +63,16 @@ func Spawn(name, repo, branch string) (*Agent, error) {
 		}
 	}
 
+	cache := cacheDir()
 	args := []string{
 		"run", "-d",
 		"--name", name,
 		"-p", fmt.Sprintf("%d:8080", port),
 		"-e", fmt.Sprintf("GH_TOKEN=%s", ghToken),
+		"-v", fmt.Sprintf("%s/composer:/home/agent/.cache/composer:z", cache),
+		"-v", fmt.Sprintf("%s/npm:/home/agent/.cache/npm:z", cache),
+		"-v", fmt.Sprintf("%s/go-mod:/home/agent/.cache/go-mod:z", cache),
+		"-v", fmt.Sprintf("%s/pip:/home/agent/.cache/pip:z", cache),
 		"agent-devbox:latest",
 	}
 
