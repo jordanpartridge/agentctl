@@ -20,14 +20,24 @@ func main() {
 	switch os.Args[1] {
 	case "spawn":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: agentctl spawn <name> <repo> [branch]")
+			fmt.Println("Usage: agentctl spawn <name> <repo> [branch] [--intent <text>]")
 			os.Exit(1)
 		}
 		branch := "main"
-		if len(os.Args) > 4 {
-			branch = os.Args[4]
+		intent := ""
+		positional := 0
+		for i := 4; i < len(os.Args); i++ {
+			if os.Args[i] == "--intent" && i+1 < len(os.Args) {
+				intent = os.Args[i+1]
+				i++ // skip next arg
+			} else if !strings.HasPrefix(os.Args[i], "--") {
+				if positional == 0 {
+					branch = os.Args[i]
+				}
+				positional++
+			}
 		}
-		agent, err := container.Spawn(os.Args[2], os.Args[3], branch)
+		agent, err := container.SpawnWithIntent(os.Args[2], os.Args[3], branch, intent)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

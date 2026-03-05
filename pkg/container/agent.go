@@ -44,6 +44,19 @@ func ensureCacheDirs() error {
 	return nil
 }
 
+// SpawnWithIntent creates a new agent container with the given repo cloned and an intent description.
+func SpawnWithIntent(name, repo, branch, intent string) (*Agent, error) {
+	agent, err := Spawn(name, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	if intent != "" {
+		agent.Intent = intent
+		saveAgent(agent)
+	}
+	return agent, nil
+}
+
 // Spawn creates a new agent container with the given repo cloned
 func Spawn(name, repo, branch string) (*Agent, error) {
 	rand.Seed(time.Now().UnixNano())
