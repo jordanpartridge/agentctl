@@ -17,10 +17,13 @@ type Agent struct {
 	Port        int       `json:"port"`
 	Repo        string    `json:"repo"`
 	Branch      string    `json:"branch"`
+	Image       string    `json:"image,omitempty"`
 	Status      string    `json:"status"`
 	Created     time.Time `json:"created"`
 	Intent      string    `json:"intent,omitempty"`
 }
+
+const DefaultImage = "agent-devbox:latest"
 
 // cacheDir returns the path to the shared cache directory on the host
 func cacheDir() string {
@@ -44,8 +47,21 @@ func ensureCacheDirs() error {
 	return nil
 }
 
+// SpawnWithIntent creates a new agent container with the given repo cloned and an intent description.
+func SpawnWithIntent(name, repo, branch, intent, image string) (*Agent, error) {
+	agent, err := Spawn(name, repo, branch, image)
+	if err != nil {
+		return nil, err
+	}
+	if intent != "" {
+		agent.Intent = intent
+		saveAgent(agent)
+	}
+	return agent, nil
+}
+
 // Spawn creates a new agent container with the given repo cloned
-func Spawn(name, repo, branch string) (*Agent, error) {
+func Spawn(name, repo, branch, image string) (*Agent, error) {
 	rand.Seed(time.Now().UnixNano())
 	port := 8000 + rand.Intn(1000)
 
@@ -63,6 +79,10 @@ func Spawn(name, repo, branch string) (*Agent, error) {
 		}
 	}
 
+	if image == "" {
+		image = DefaultImage
+	}
+
 	cache := cacheDir()
 	args := []string{
 		"run", "-d",
@@ -73,7 +93,7 @@ func Spawn(name, repo, branch string) (*Agent, error) {
 		"-v", fmt.Sprintf("%s/npm:/home/agent/.cache/npm:z", cache),
 		"-v", fmt.Sprintf("%s/go-mod:/home/agent/.cache/go-mod:z", cache),
 		"-v", fmt.Sprintf("%s/pip:/home/agent/.cache/pip:z", cache),
-		"agent-devbox:latest",
+		image,
 	}
 
 	cmd := exec.Command("podman", args...)
@@ -116,6 +136,7 @@ func Spawn(name, repo, branch string) (*Agent, error) {
 		Port:        port,
 		Repo:        repo,
 		Branch:      branch,
+		Image:       image,
 		Status:      "running",
 		Created:     time.Now(),
 	}
@@ -265,7 +286,8 @@ func saveAgent(agent *Agent) error {
 	return os.WriteFile(agentMetaPath(agent.Name), data, 0644)
 }
 
-func loadAgent(name string) (*Agent, error) {
+// LoadAgent reads the saved metadata for the named agent.
+func LoadAgent(name string) (*Agent, error) {
 	data, err := os.ReadFile(agentMetaPath(name))
 	if err != nil {
 		return nil, fmt.Errorf("agent not found: %s", name)
@@ -273,4 +295,8 @@ func loadAgent(name string) (*Agent, error) {
 	var agent Agent
 	json.Unmarshal(data, &agent)
 	return &agent, nil
+}
+
+func loadAgent(name string) (*Agent, error) {
+	return LoadAgent(name)
 }

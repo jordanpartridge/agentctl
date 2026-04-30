@@ -79,11 +79,11 @@ Keep going until tests pass and all changes are committed.`,
 				status.TestStatus, status.HasUncommitted, task)
 		}
 
-		// Run Claude
-		fmt.Printf("🤖 Running Claude...\n")
-		err := runClaude(name, prompt)
+		// Run agent via the image's run-task entrypoint
+		fmt.Printf("🤖 Running agent...\n")
+		err := runTask(name, prompt)
 		if err != nil {
-			fmt.Printf("⚠️  Claude error: %v\n", err)
+			fmt.Printf("⚠️  Agent error: %v\n", err)
 		}
 
 		// Wait a moment for things to settle
@@ -191,20 +191,21 @@ func getStatus(name string) AgentStatus {
 		break
 	}
 
-	// Check if Claude is running
+	// Check if the agent task runner is active
 	out, _ = exec.Command("podman", "exec", name, "sh", "-c",
-		"ps aux 2>/dev/null | grep -v grep | grep claude || true").Output()
+		"ps aux 2>/dev/null | grep -v grep | grep -E 'run-task|claude|opencode' || true").Output()
 	status.ClaudeRunning = len(strings.TrimSpace(string(out))) > 0
 
 	return status
 }
 
-func runClaude(name string, prompt string) error {
-	// Escape the prompt for shell
+// runTask calls the image's standard run-task entrypoint with the given prompt.
+// Each image ships its own /usr/local/bin/run-task so agentctl stays image-agnostic.
+func runTask(name string, prompt string) error {
 	escaped := strings.ReplaceAll(prompt, "'", "'\\''")
 
 	cmd := exec.Command("podman", "exec", name, "sh", "-c",
-		fmt.Sprintf("cd /home/agent/workspace/repo && claude --dangerously-skip-permissions -p '%s' 2>&1 | tee -a /home/agent/claude.log", escaped))
+		fmt.Sprintf("cd /home/agent/workspace/repo && run-task '%s' 2>&1 | tee -a /home/agent/claude.log", escaped))
 
 	output, err := cmd.CombinedOutput()
 	if len(output) > 500 {

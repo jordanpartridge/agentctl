@@ -183,6 +183,11 @@ func Cleanup(name string, result string, attempts int, metadata map[string]strin
 		return fmt.Errorf("failed to save history: %w", err)
 	}
 
+	// Capture intent in knowledge base before removing
+	if h.Intent != "" {
+		captureIntentKnowledge(h)
+	}
+
 	// Stop and remove container
 	exec.Command("podman", "stop", name).Run()
 	exec.Command("podman", "rm", name).Run()
@@ -191,6 +196,35 @@ func Cleanup(name string, result string, attempts int, metadata map[string]strin
 	os.Remove(agentMetaPath(name))
 
 	return nil
+}
+
+// captureIntentKnowledge feeds agent intent and result into the know CLI for post-mortem tracking.
+func captureIntentKnowledge(h *AgentHistory) {
+	title := fmt.Sprintf("Agent %s: %s", h.Name, h.Result)
+	content := fmt.Sprintf("Intent: %s\nRepo: %s\nBranch: %s\nResult: %s\nDuration: %s",
+		h.Intent, h.Repo, h.Branch, h.Result,
+		h.CompletedAt.Sub(h.Created).Round(time.Minute))
+
+	if h.Metadata != nil {
+		for k, v := range h.Metadata {
+			content += fmt.Sprintf("\n%s: %s", k, v)
+		}
+	}
+
+	args := []string{
+		"add", title,
+		"--content", content,
+		"--category", "deployment",
+		"--tags", "agent,agentctl," + h.Result,
+		"--repo", h.Repo,
+		"--branch", h.Branch,
+		"--confidence", "80",
+		"--no-git",
+		"--skip-enhance",
+		"--force",
+		"-n",
+	}
+	exec.Command("know", args...).Run()
 }
 
 // Prune removes all exited and stopped agent containers, preserving history.

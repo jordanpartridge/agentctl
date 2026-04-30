@@ -10,6 +10,7 @@ import (
 	"github.com/jordanpartridge/agentctl/pkg/container"
 	"github.com/jordanpartridge/agentctl/pkg/coordination"
 	"github.com/jordanpartridge/agentctl/pkg/pipeline"
+	"github.com/jordanpartridge/agentctl/pkg/review"
 )
 
 func main() {
@@ -21,19 +22,34 @@ func main() {
 	switch os.Args[1] {
 	case "spawn":
 		if len(os.Args) < 4 {
-			fmt.Println("Usage: agentctl spawn <name> <repo> [branch]")
+			fmt.Println("Usage: agentctl spawn <name> <repo> [branch] [--image <image>] [--intent <text>]")
 			os.Exit(1)
 		}
 		branch := "main"
-		if len(os.Args) > 4 {
-			branch = os.Args[4]
+		intent := ""
+		image := ""
+		positional := 0
+		for i := 4; i < len(os.Args); i++ {
+			if os.Args[i] == "--intent" && i+1 < len(os.Args) {
+				intent = os.Args[i+1]
+				i++
+			} else if os.Args[i] == "--image" && i+1 < len(os.Args) {
+				image = os.Args[i+1]
+				i++
+			} else if !strings.HasPrefix(os.Args[i], "--") {
+				if positional == 0 {
+					branch = os.Args[i]
+				}
+				positional++
+			}
 		}
-		agent, err := container.Spawn(os.Args[2], os.Args[3], branch)
+		agent, err := container.SpawnWithIntent(os.Args[2], os.Args[3], branch, intent, image)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("🤖 Agent: %s\n📦 Container: %s\n🌐 Port: %d\n", agent.Name, agent.ContainerID[:12], agent.Port)
+		img := agent.Image
+		fmt.Printf("🤖 Agent: %s\n📦 Container: %s\n🖼️  Image: %s\n🌐 Port: %d\n", agent.Name, agent.ContainerID[:12], img, agent.Port)
 
 	case "run":
 		// Run until done: agentctl run <name> <task> [max-attempts]
@@ -178,6 +194,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+	case "watch":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: agentctl watch <name>")
+			os.Exit(1)
+		}
+		watchAgent(os.Args[2])
 
 	case "shell":
 		if len(os.Args) < 3 {
@@ -507,8 +530,72 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "review":
+		// agentctl review <name>
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: agentctl review <name>")
+			os.Exit(1)
+		}
+		result, err := review.Review(os.Args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+			os.Exit(1)
+		}
+		if result.Approved {
+			fmt.Println("✅ APPROVED — merging is safe")
+			os.Exit(0)
+		}
+		fmt.Println("❌ Changes requested:")
+		for _, line := range strings.Split(result.Feedback, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				fmt.Printf("  - %s\n", line)
+			}
+		}
+		os.Exit(1)
+
 	default:
 		printUsage()
+	}
+}
+
+func watchAgent(name string) {
+	for {
+		fmt.Print("\033[2J\033[H")
+		fmt.Printf("👁️  Watching: %s  —  %s  (Ctrl+C to stop)\n", name, time.Now().Format("15:04:05"))
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		status := container.CheckCompletion(name)
+
+		testIcon := "❓"
+		switch status.TestStatus {
+		case "pass":
+			testIcon = "✅"
+		case "fail":
+			testIcon = "❌"
+		}
+
+		uncommittedIcon := "✅"
+		if status.HasUncommitted {
+			uncommittedIcon = "⚠️ "
+		}
+
+		agentIcon := "💤"
+		if status.ClaudeRunning {
+			agentIcon = "🤖"
+		}
+
+		fmt.Printf("\n  Tests:        %s %s\n", testIcon, status.TestStatus)
+		fmt.Printf("  Uncommitted:  %s %v\n", uncommittedIcon, status.HasUncommitted)
+		fmt.Printf("  Agent:        %s running=%v\n\n", agentIcon, status.ClaudeRunning)
+
+		if status.TestStatus == "pass" && !status.HasUncommitted {
+			fmt.Println("  ✅ Task complete!")
+		} else {
+			fmt.Println("  ⏳ Working...")
+		}
+
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -529,12 +616,13 @@ func printUsage() {
 	fmt.Println("agentctl - Claude Code Agent Container Orchestrator")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  spawn <name> <repo> [branch]    Create new agent container")
+	fmt.Println("  spawn <name> <repo> [branch] [--image <img>]  Create new agent container")
 	fmt.Println("  run <name> <task> [attempts]    Run until task complete (Ralph Wiggum mode)")
 	fmt.Println("  check <name>                    Check if agent's task is complete")
 	fmt.Println("  list                            List all agents with lifecycle status")
 	fmt.Println("  status <name>                   Show agent details")
 	fmt.Println("  logs [-f] <name>                Show Claude logs (-f to follow in real-time)")
+	fmt.Println("  watch <name>                    Poll agent status every 5s (tests/uncommitted/running)")
 	fmt.Println("  spy <name> [flags]              Stream Claude's real-time session activity")
 	fmt.Println("  shell <name>                    Open shell in agent container")
 	fmt.Println("  diagnose <name>                 Debug stuck agents (processes, logs, auth)")
@@ -549,6 +637,9 @@ func printUsage() {
 	fmt.Println("  pipeline <repo> <issue> [--dry-run] [--from=<step>]")
 	fmt.Println("                                  Run a pipeline.yml against a repo+issue")
 	fmt.Println()
+	fmt.Println("QA / Review:")
+	fmt.Println("  review <name>                   Ask Lexi to review the open PR (exit 0=approved, 1=changes)")
+	fmt.Println()
 	fmt.Println("Coordination:")
 	fmt.Println("  claim <agent> <repo-url> <file>             Claim a file for editing")
 	fmt.Println("  release <agent> <repo-url> <file>           Release a file claim")
@@ -556,7 +647,7 @@ func printUsage() {
 	fmt.Println("  bus <repo-url> [--claims|--messages|--state] Show coordination bus state")
 	fmt.Println()
 	fmt.Println("Example:")
-	fmt.Println("  agentctl spawn fix-bug https://github.com/user/repo feature-branch")
+	fmt.Println("  agentctl spawn fix-bug https://github.com/user/repo feature-branch --image agent-lexi:latest")
 	fmt.Println("  agentctl run fix-bug 'Fix the failing tests in src/auth.go'")
 	fmt.Println("  agentctl spy fix-bug")
 	fmt.Println("  agentctl check fix-bug")
