@@ -46,8 +46,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		img := agent.Image
-		fmt.Printf("🤖 Agent: %s\n📦 Container: %s\n🖼️  Image: %s\n🌐 Port: %d\n", agent.Name, agent.ContainerID[:12], img, agent.Port)
+		fmt.Printf("🤖 Agent: %s\n📂 Clone:  %s\n🌿 Branch: %s\n", agent.Name, agent.CloneDir, agent.Branch)
 
 	case "run":
 		// Run until done: agentctl run <name> <task> [max-attempts]
@@ -124,16 +123,9 @@ func main() {
 			case container.StateExited:
 				indicator = "💀"
 				label = "exited"
-			case container.StateStopped:
-				indicator = "🔌"
-				label = "stopped"
 			}
 			age := formatDuration(a.Age)
-			cid := a.ContainerID
-			if len(cid) > 12 {
-				cid = cid[:12]
-			}
-			fmt.Printf("%s %-15s %-12s %-12s port:%-5d %s\n", indicator, a.Name, label, cid, a.Port, age)
+			fmt.Printf("%s %-15s %-12s %s\n", indicator, a.Name, label, age)
 		}
 
 	case "status":

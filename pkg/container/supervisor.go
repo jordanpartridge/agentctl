@@ -12,37 +12,30 @@ import (
 type TaskResult struct {
 	Completed   bool
 	TestsPassed bool
-	LintPassed  bool
 	HasChanges  bool
 	Error       string
 	Attempts    int
 }
 
 type AgentStatus struct {
-	TestStatus     string // "pass", "fail", "unknown"
+	TestStatus    string // "pass", "fail", "unknown"
 	HasUncommitted bool
 	ClaudeRunning  bool
 }
 
-// RunUntilDone keeps the agent working until the task is complete
-// This implements the "Ralph Wiggum" pattern - persistent retry until success.
-// When a repoURL is available (via agent metadata), it integrates with the
-// coordination bus to update state and check for rebase_needed signals.
+// RunUntilDone runs the agent task loop until complete or max attempts reached.
 func RunUntilDone(name string, task string, maxAttempts int) (*TaskResult, error) {
 	result := &TaskResult{}
 
 	if maxAttempts == 0 {
-		maxAttempts = 10 // default
+		maxAttempts = 10
 	}
 
-	// Look up agent metadata for coordination integration
 	var repoURL string
 	if agent, err := loadAgent(name); err == nil && agent.Repo != "" {
 		repoURL = agent.Repo
-		// Initialize coordination directory
 		if _, err := coordination.Init(repoURL); err != nil {
-			fmt.Printf("⚠️  Coordination init failed (continuing without): %v\n", err)
-			repoURL = "" // disable coordination
+			repoURL = ""
 		}
 	}
 
@@ -52,20 +45,17 @@ func RunUntilDone(name string, task string, maxAttempts int) (*TaskResult, error
 		result.Attempts = attempt
 		fmt.Printf("\n🔄 Attempt %d/%d\n", attempt, maxAttempts)
 
-		// Update coordination state
 		if repoURL != "" {
 			coordination.UpdateAgentState(repoURL, name, "working", "")
 		}
 
-		// Check for rebase_needed signals from other agents
 		if repoURL != "" {
 			if needsRebase, _ := coordination.HasRebaseNeeded(repoURL, name, loopStart); needsRebase {
-				fmt.Printf("⚠️  Rebase needed signal detected, adding to prompt\n")
+				fmt.Printf("⚠️  Rebase needed signal detected\n")
 				task = task + "\n\nIMPORTANT: Another agent has pushed changes. Run 'git pull --rebase' before continuing."
 			}
 		}
 
-		// Build the prompt - include context from previous attempts
 		prompt := task
 		if attempt > 1 {
 			status := getStatus(name)
@@ -79,35 +69,28 @@ Keep going until tests pass and all changes are committed.`,
 				status.TestStatus, status.HasUncommitted, task)
 		}
 
-		// Run agent via the image's run-task entrypoint
 		fmt.Printf("🤖 Running agent...\n")
-		err := runTask(name, prompt)
-		if err != nil {
+		if err := runTask(name, prompt); err != nil {
 			fmt.Printf("⚠️  Agent error: %v\n", err)
 		}
 
-		// Wait a moment for things to settle
 		time.Sleep(2 * time.Second)
 
-		// Check if done
 		status := getStatus(name)
 		fmt.Printf("📊 Status: tests=%s uncommitted=%v\n", status.TestStatus, status.HasUncommitted)
 
 		result.TestsPassed = status.TestStatus == "pass"
 		result.HasChanges = status.HasUncommitted
 
-		// Done if tests pass and no uncommitted changes
 		if result.TestsPassed && !result.HasChanges {
 			result.Completed = true
 			fmt.Printf("✅ Task completed!\n")
 
-			// Update coordination state to done and release all claims
 			if repoURL != "" {
 				coordination.UpdateAgentState(repoURL, name, "done", "")
 				coordination.ReleaseAllForAgent(repoURL, name)
 			}
 
-			// Save completion history for eventual cleanup
 			SaveHistory(&AgentHistory{
 				Name:        name,
 				Repo:        repoURL,
@@ -120,12 +103,10 @@ Keep going until tests pass and all changes are committed.`,
 			return result, nil
 		}
 
-		// Not done, loop continues
 		fmt.Printf("⏳ Not done yet, continuing...\n")
 		time.Sleep(3 * time.Second)
 	}
 
-	// Update coordination state on failure
 	if repoURL != "" {
 		coordination.UpdateAgentState(repoURL, name, "blocked", "")
 	}
@@ -134,7 +115,7 @@ Keep going until tests pass and all changes are committed.`,
 	return result, fmt.Errorf("task not completed after %d attempts", maxAttempts)
 }
 
-// CheckCompletion checks if an agent's task appears complete
+// CheckCompletion checks if an agent's task appears complete.
 func CheckCompletion(name string) AgentStatus {
 	return getStatus(name)
 }
@@ -142,48 +123,46 @@ func CheckCompletion(name string) AgentStatus {
 func getStatus(name string) AgentStatus {
 	status := AgentStatus{TestStatus: "unknown"}
 
+	agent, err := loadAgent(name)
+	if err != nil {
+		return status
+	}
+
+	dir := agent.CloneDir
+
 	// Check for uncommitted changes
-	out, _ := exec.Command("podman", "exec", name, "sh", "-c",
-		"cd /home/agent/workspace/repo && git status --porcelain 2>/dev/null").Output()
+	out, _ := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
 	status.HasUncommitted = len(strings.TrimSpace(string(out))) > 0
 
-	// Check if tests pass (try common test runners)
-	// Use exit code for reliable pass/fail detection
+	// Check if tests pass
 	testCmds := []struct {
-		check string // command to check if test runner exists
-		run   string // command to run tests
+		check string
+		run   string
 	}{
 		{
-			check: "cd /home/agent/workspace/repo && test -f vendor/bin/pest",
-			run:   "cd /home/agent/workspace/repo && vendor/bin/pest --no-coverage 2>&1; echo EXIT_CODE:$?",
+			check: fmt.Sprintf("test -f %s/vendor/bin/pest", dir),
+			run:   fmt.Sprintf("cd %s && vendor/bin/pest --no-coverage 2>&1; echo EXIT_CODE:$?", dir),
 		},
 		{
-			check: "cd /home/agent/workspace/repo && test -f package.json",
-			run:   "cd /home/agent/workspace/repo && npm test 2>&1; echo EXIT_CODE:$?",
+			check: fmt.Sprintf("test -f %s/package.json", dir),
+			run:   fmt.Sprintf("cd %s && npm test 2>&1; echo EXIT_CODE:$?", dir),
 		},
 		{
-			check: "cd /home/agent/workspace/repo && test -f go.mod",
-			run:   "cd /home/agent/workspace/repo && go test ./... 2>&1; echo EXIT_CODE:$?",
+			check: fmt.Sprintf("test -f %s/go.mod", dir),
+			run:   fmt.Sprintf("cd %s && go test ./... 2>&1; echo EXIT_CODE:$?", dir),
 		},
 		{
-			check: "cd /home/agent/workspace/repo && test -f pytest.ini -o -f pyproject.toml",
-			run:   "cd /home/agent/workspace/repo && pytest 2>&1; echo EXIT_CODE:$?",
-		},
-		{
-			check: "cd /home/agent/workspace/repo && test -f Cargo.toml",
-			run:   "cd /home/agent/workspace/repo && cargo test 2>&1; echo EXIT_CODE:$?",
+			check: fmt.Sprintf("test -f %s/pytest.ini -o -f %s/pyproject.toml", dir, dir),
+			run:   fmt.Sprintf("cd %s && pytest 2>&1; echo EXIT_CODE:$?", dir),
 		},
 	}
 
 	for _, tc := range testCmds {
-		// Check if test runner exists
-		if err := exec.Command("podman", "exec", name, "sh", "-c", tc.check).Run(); err != nil {
+		if err := exec.Command("sh", "-c", tc.check).Run(); err != nil {
 			continue
 		}
-		// Run tests and check exit code
-		out, _ := exec.Command("podman", "exec", name, "sh", "-c", tc.run).Output()
-		output := string(out)
-		if strings.Contains(output, "EXIT_CODE:0") {
+		out, _ := exec.Command("sh", "-c", tc.run).Output()
+		if strings.Contains(string(out), "EXIT_CODE:0") {
 			status.TestStatus = "pass"
 		} else {
 			status.TestStatus = "fail"
@@ -191,21 +170,27 @@ func getStatus(name string) AgentStatus {
 		break
 	}
 
-	// Check if the agent task runner is active
-	out, _ = exec.Command("podman", "exec", name, "sh", "-c",
-		"ps aux 2>/dev/null | grep -v grep | grep -E 'run-task|claude|opencode' || true").Output()
+	// Check if run-task / claude process is active in this clone dir
+	out, _ = exec.Command("sh", "-c",
+		fmt.Sprintf("ps aux 2>/dev/null | grep -v grep | grep '%s' || true", dir)).Output()
 	status.ClaudeRunning = len(strings.TrimSpace(string(out))) > 0
 
 	return status
 }
 
-// runTask calls the image's standard run-task entrypoint with the given prompt.
-// Each image ships its own /usr/local/bin/run-task so agentctl stays image-agnostic.
+// runTask calls run-task in the agent's clone directory.
+// run-task must be available in PATH — each environment provides its own implementation.
 func runTask(name string, prompt string) error {
-	escaped := strings.ReplaceAll(prompt, "'", "'\\''")
+	agent, err := loadAgent(name)
+	if err != nil {
+		return err
+	}
 
-	cmd := exec.Command("podman", "exec", name, "sh", "-c",
-		fmt.Sprintf("cd /home/agent/workspace/repo && run-task '%s' 2>&1 | tee -a /home/agent/claude.log", escaped))
+	escaped := strings.ReplaceAll(prompt, "'", "'\\''")
+	log := logFile(name)
+
+	cmd := exec.Command("sh", "-c",
+		fmt.Sprintf("cd %s && run-task '%s' 2>&1 | tee -a %s", agent.CloneDir, escaped, log))
 
 	output, err := cmd.CombinedOutput()
 	if len(output) > 500 {

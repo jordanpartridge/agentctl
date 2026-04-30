@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// DefaultGracePeriod is how long a completed agent container stays before auto-cleanup.
+// DefaultGracePeriod is how long a completed agent clone stays before auto-cleanup.
 const DefaultGracePeriod = 1 * time.Hour
 
-// AgentHistory preserves metadata about an agent after its container is removed.
+// AgentHistory preserves metadata about an agent after its clone is removed.
 type AgentHistory struct {
 	Name        string            `json:"name"`
 	Repo        string            `json:"repo"`
@@ -22,12 +22,11 @@ type AgentHistory struct {
 	Created     time.Time         `json:"created"`
 	CompletedAt time.Time         `json:"completed_at,omitempty"`
 	RemovedAt   time.Time         `json:"removed_at,omitempty"`
-	Result      string            `json:"result"` // "success", "failed", "killed"
+	Result      string            `json:"result"` // "success", "failed", "killed", "stale"
 	Attempts    int               `json:"attempts,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"` // PR URL, commit SHA, etc.
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
-// historyDir returns the path to the agent history directory.
 func historyDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".agentctl", "history")
@@ -42,24 +41,8 @@ func SaveHistory(h *AgentHistory) error {
 	if err := os.MkdirAll(historyDir(), 0755); err != nil {
 		return fmt.Errorf("failed to create history dir: %w", err)
 	}
-	data, err := json.MarshalIndent(h, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal history: %w", err)
-	}
+	data, _ := json.MarshalIndent(h, "", "  ")
 	return os.WriteFile(historyPath(h.Name), data, 0644)
-}
-
-// LoadHistory loads a single agent history record.
-func LoadHistory(name string) (*AgentHistory, error) {
-	data, err := os.ReadFile(historyPath(name))
-	if err != nil {
-		return nil, fmt.Errorf("history not found: %s", name)
-	}
-	var h AgentHistory
-	if err := json.Unmarshal(data, &h); err != nil {
-		return nil, fmt.Errorf("failed to parse history: %w", err)
-	}
-	return &h, nil
 }
 
 // ListHistory returns all agent history records.
@@ -76,10 +59,7 @@ func ListHistory() ([]*AgentHistory, error) {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(historyDir(), e.Name()))
-		if err != nil {
-			continue
-		}
+		data, _ := os.ReadFile(filepath.Join(historyDir(), e.Name()))
 		var h AgentHistory
 		if err := json.Unmarshal(data, &h); err != nil {
 			continue
@@ -93,18 +73,16 @@ func ListHistory() ([]*AgentHistory, error) {
 type AgentLifecycleState string
 
 const (
-	StateActive    AgentLifecycleState = "active"    // Claude is running, work in progress
-	StateCompleted AgentLifecycleState = "completed" // Task done, awaiting cleanup
-	StateExited    AgentLifecycleState = "exited"    // Container exited (may be stale)
-	StateStopped   AgentLifecycleState = "stopped"   // Container not found
+	StateActive    AgentLifecycleState = "active"    // run-task is running
+	StateCompleted AgentLifecycleState = "completed" // clone exists, no active process
+	StateExited    AgentLifecycleState = "exited"    // clone directory gone
 )
 
 // AgentWithState enriches an Agent with lifecycle information.
 type AgentWithState struct {
 	*Agent
-	Lifecycle   AgentLifecycleState `json:"lifecycle"`
-	ContainerUp bool                `json:"container_up"`
-	Age         time.Duration       `json:"-"`
+	Lifecycle AgentLifecycleState
+	Age       time.Duration
 }
 
 // ListWithState returns all agents enriched with lifecycle state.
@@ -126,32 +104,17 @@ func ListWithState() ([]*AgentWithState, error) {
 			Age:   time.Since(agent.Created),
 		}
 
-		// Get container status from podman
-		out, _ := exec.Command("podman", "inspect", "-f", "{{.State.Status}}", agent.Name).Output()
-		containerStatus := strings.TrimSpace(string(out))
-
-		switch containerStatus {
-		case "running":
-			aws.ContainerUp = true
-			// Check if Claude is still working
-			psOut, _ := exec.Command("podman", "exec", agent.Name, "sh", "-c",
-				"ps aux 2>/dev/null | grep -v grep | grep claude || true").Output()
-			if len(strings.TrimSpace(string(psOut))) > 0 {
+		if _, err := os.Stat(agent.CloneDir); err != nil {
+			aws.Lifecycle = StateExited
+		} else {
+			// Active if a process is running inside the clone dir
+			out, _ := exec.Command("sh", "-c",
+				fmt.Sprintf("ps aux 2>/dev/null | grep -v grep | grep '%s' || true", agent.CloneDir)).Output()
+			if len(strings.TrimSpace(string(out))) > 0 {
 				aws.Lifecycle = StateActive
 			} else {
 				aws.Lifecycle = StateCompleted
 			}
-		case "exited":
-			aws.ContainerUp = false
-			aws.Lifecycle = StateExited
-		default:
-			aws.ContainerUp = false
-			aws.Lifecycle = StateStopped
-		}
-
-		agent.Status = containerStatus
-		if agent.Status == "" {
-			agent.Status = "stopped"
 		}
 
 		agents = append(agents, aws)
@@ -159,14 +122,13 @@ func ListWithState() ([]*AgentWithState, error) {
 	return agents, nil
 }
 
-// Cleanup stops and removes a single agent container, preserving history.
+// Cleanup removes a clone and saves history.
 func Cleanup(name string, result string, attempts int, metadata map[string]string) error {
 	agent, err := loadAgent(name)
 	if err != nil {
 		return fmt.Errorf("agent not found: %s", name)
 	}
 
-	// Save history before removing
 	h := &AgentHistory{
 		Name:        agent.Name,
 		Repo:        agent.Repo,
@@ -179,109 +141,57 @@ func Cleanup(name string, result string, attempts int, metadata map[string]strin
 		Attempts:    attempts,
 		Metadata:    metadata,
 	}
-	if err := SaveHistory(h); err != nil {
-		return fmt.Errorf("failed to save history: %w", err)
-	}
+	SaveHistory(h)
 
-	// Capture intent in knowledge base before removing
 	if h.Intent != "" {
 		captureIntentKnowledge(h)
 	}
 
-	// Stop and remove container
-	exec.Command("podman", "stop", name).Run()
-	exec.Command("podman", "rm", name).Run()
-
-	// Remove agent metadata file
+	os.RemoveAll(agent.CloneDir)
+	os.Remove(logFile(name))
 	os.Remove(agentMetaPath(name))
-
 	return nil
 }
 
-// captureIntentKnowledge feeds agent intent and result into the know CLI for post-mortem tracking.
 func captureIntentKnowledge(h *AgentHistory) {
 	title := fmt.Sprintf("Agent %s: %s", h.Name, h.Result)
 	content := fmt.Sprintf("Intent: %s\nRepo: %s\nBranch: %s\nResult: %s\nDuration: %s",
 		h.Intent, h.Repo, h.Branch, h.Result,
 		h.CompletedAt.Sub(h.Created).Round(time.Minute))
-
-	if h.Metadata != nil {
-		for k, v := range h.Metadata {
-			content += fmt.Sprintf("\n%s: %s", k, v)
-		}
-	}
-
-	args := []string{
-		"add", title,
-		"--content", content,
-		"--category", "deployment",
-		"--tags", "agent,agentctl," + h.Result,
-		"--repo", h.Repo,
-		"--branch", h.Branch,
-		"--confidence", "80",
-		"--no-git",
-		"--skip-enhance",
-		"--force",
-		"-n",
-	}
-	exec.Command("know", args...).Run()
+	exec.Command("know", "add", title, "--content", content,
+		"--category", "deployment", "--tags", "agent,agentctl,"+h.Result,
+		"--confidence", "80", "--no-git", "--skip-enhance", "--force", "-n").Run()
 }
 
-// Prune removes all exited and stopped agent containers, preserving history.
-func Prune() ([]string, error) {
-	agents, err := ListWithState()
-	if err != nil {
-		return nil, err
-	}
-
-	var pruned []string
-	for _, a := range agents {
-		if a.Lifecycle == StateExited || a.Lifecycle == StateStopped {
-			if err := Cleanup(a.Name, "pruned", 0, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to prune %s: %v\n", a.Name, err)
-				continue
-			}
-			pruned = append(pruned, a.Name)
-		}
-	}
-	return pruned, nil
-}
-
-// CleanupCompleted removes completed agents that have exceeded the grace period.
+// CleanupCompleted removes clones that have been idle past the grace period.
 func CleanupCompleted(gracePeriod time.Duration) ([]string, error) {
 	agents, err := ListWithState()
 	if err != nil {
 		return nil, err
 	}
-
 	var cleaned []string
 	for _, a := range agents {
 		if a.Lifecycle == StateCompleted && a.Age > gracePeriod {
-			if err := Cleanup(a.Name, "success", 0, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to cleanup %s: %v\n", a.Name, err)
-				continue
+			if err := Cleanup(a.Name, "success", 0, nil); err == nil {
+				cleaned = append(cleaned, a.Name)
 			}
-			cleaned = append(cleaned, a.Name)
 		}
 	}
 	return cleaned, nil
 }
 
-// CleanupStale removes containers that have been exited for longer than the grace period.
+// CleanupStale removes exited agents past the grace period.
 func CleanupStale(gracePeriod time.Duration) ([]string, error) {
 	agents, err := ListWithState()
 	if err != nil {
 		return nil, err
 	}
-
 	var cleaned []string
 	for _, a := range agents {
-		if (a.Lifecycle == StateExited || a.Lifecycle == StateStopped) && a.Age > gracePeriod {
-			if err := Cleanup(a.Name, "stale", 0, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to cleanup %s: %v\n", a.Name, err)
-				continue
+		if a.Lifecycle == StateExited && a.Age > gracePeriod {
+			if err := Cleanup(a.Name, "stale", 0, nil); err == nil {
+				cleaned = append(cleaned, a.Name)
 			}
-			cleaned = append(cleaned, a.Name)
 		}
 	}
 	return cleaned, nil

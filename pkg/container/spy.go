@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -66,19 +67,18 @@ type progressData struct {
 	Name               string `json:"name"`
 }
 
-// Spy streams real-time session activity from a running agent container.
+// Spy streams real-time session activity from a running agent's clone directory.
 func Spy(name string, opts SpyOptions) error {
-	// Verify the container is running.
-	out, err := exec.Command("podman", "inspect", "-f", "{{.State.Status}}", name).Output()
+	agent, err := loadAgent(name)
 	if err != nil {
-		return fmt.Errorf("container %q not found — is the agent spawned?", name)
-	}
-	status := strings.TrimSpace(string(out))
-	if status != "running" {
-		return fmt.Errorf("container %q is %s, not running", name, status)
+		return fmt.Errorf("agent %q not found", name)
 	}
 
-	// Discover the session JSONL file path inside the container.
+	if _, err := os.Stat(agent.CloneDir); err != nil {
+		return fmt.Errorf("clone directory %q not found — is the agent running?", agent.CloneDir)
+	}
+
+	// Discover the session JSONL file path in the local clone's .claude dir.
 	sessionPath, err := discoverSessionFile(name)
 	if err != nil {
 		return fmt.Errorf("session discovery failed: %w", err)
@@ -88,8 +88,7 @@ func Spy(name string, opts SpyOptions) error {
 	fmt.Fprintf(os.Stderr, "Session: %s\n", sessionPath)
 	fmt.Fprintln(os.Stderr, "---")
 
-	// Tail the session JSONL via podman exec.
-	cmd := exec.Command("podman", "exec", name, "tail", "-f", "-n", "+1", sessionPath)
+	cmd := exec.Command("tail", "-f", "-n", "+1", sessionPath)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("pipe failed: %w", err)
@@ -121,12 +120,22 @@ func Spy(name string, opts SpyOptions) error {
 	return cmd.Wait()
 }
 
-// discoverSessionFile reads .claude.json inside the container, extracts the
-// lastSessionId, then locates the matching JSONL file under .claude/projects/.
+// discoverSessionFile finds the active Claude session JSONL in the agent's clone dir.
 func discoverSessionFile(name string) (string, error) {
-	// Read .claude.json from the container.
-	out, err := exec.Command("podman", "exec", name, "cat", "/home/agent/.claude.json").Output()
+	agent, err := loadAgent(name)
 	if err != nil {
+		return "", fmt.Errorf("agent not found: %w", err)
+	}
+
+	claudeJSON := filepath.Join(agent.CloneDir, ".claude.json")
+	out, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		// Fall back to the most recently modified JSONL anywhere in the clone
+		fallback, ferr := exec.Command("sh", "-c",
+			fmt.Sprintf("find %s/.claude/projects -name '*.jsonl' 2>/dev/null | xargs ls -t 2>/dev/null | head -1", agent.CloneDir)).Output()
+		if ferr == nil && len(strings.TrimSpace(string(fallback))) > 0 {
+			return strings.TrimSpace(string(fallback)), nil
+		}
 		return "", fmt.Errorf("could not read .claude.json: %w", err)
 	}
 
@@ -135,7 +144,6 @@ func discoverSessionFile(name string) (string, error) {
 		return "", fmt.Errorf("could not parse .claude.json: %w", err)
 	}
 
-	// Find the first project entry with a lastSessionId.
 	var sessionID string
 	for _, proj := range cfg.Projects {
 		if proj.LastSessionID != "" {
@@ -144,38 +152,19 @@ func discoverSessionFile(name string) (string, error) {
 		}
 	}
 	if sessionID == "" {
-		return "", fmt.Errorf("no lastSessionId found in .claude.json — has Claude started a session?")
+		return "", fmt.Errorf("no lastSessionId found — has Claude started a session?")
 	}
 
-	// List project directories under .claude/projects/ to find the encoded path.
-	out, err = exec.Command("podman", "exec", name, "ls", "/home/agent/.claude/projects/").Output()
-	if err != nil {
-		return "", fmt.Errorf("could not list .claude/projects/: %w", err)
-	}
-
-	dirs := strings.Fields(strings.TrimSpace(string(out)))
-	if len(dirs) == 0 {
-		return "", fmt.Errorf("no project directories found in .claude/projects/")
-	}
-
-	// Try each directory — look for a matching JSONL file.
-	for _, dir := range dirs {
-		candidate := fmt.Sprintf("/home/agent/.claude/projects/%s/%s.jsonl", dir, sessionID)
-		err := exec.Command("podman", "exec", name, "test", "-f", candidate).Run()
-		if err == nil {
+	projectsDir := filepath.Join(agent.CloneDir, ".claude", "projects")
+	entries, _ := os.ReadDir(projectsDir)
+	for _, e := range entries {
+		candidate := filepath.Join(projectsDir, e.Name(), sessionID+".jsonl")
+		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}
 
-	// If the exact session file doesn't exist yet, fall back to the most recently
-	// modified JSONL in the first project directory.
-	fallbackCmd := fmt.Sprintf("ls -t /home/agent/.claude/projects/%s/*.jsonl 2>/dev/null | head -1", dirs[0])
-	out, err = exec.Command("podman", "exec", name, "sh", "-c", fallbackCmd).Output()
-	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
-		return strings.TrimSpace(string(out)), nil
-	}
-
-	return "", fmt.Errorf("session file %s.jsonl not found in any project directory", sessionID)
+	return "", fmt.Errorf("session file %s.jsonl not found", sessionID)
 }
 
 // renderLine parses a single JSONL line and emits formatted output.
