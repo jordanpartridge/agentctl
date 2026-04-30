@@ -9,6 +9,7 @@ import (
 
 	"github.com/jordanpartridge/agentctl/pkg/container"
 	"github.com/jordanpartridge/agentctl/pkg/coordination"
+	"github.com/jordanpartridge/agentctl/pkg/pipeline"
 )
 
 func main() {
@@ -485,6 +486,27 @@ func main() {
 			}
 		}
 
+	case "pipeline":
+		// agentctl pipeline <repo> <issue> [--dry-run] [--from=<step>]
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: agentctl pipeline <repo> <issue> [--dry-run] [--from=<step>]")
+			os.Exit(1)
+		}
+		repo := os.Args[2]
+		issue := os.Args[3]
+		opts := pipeline.Options{}
+		for _, arg := range os.Args[4:] {
+			if arg == "--dry-run" {
+				opts.DryRun = true
+			} else if strings.HasPrefix(arg, "--from=") {
+				opts.FromStep = strings.TrimPrefix(arg, "--from=")
+			}
+		}
+		if err := pipeline.Run(repo, issue, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Pipeline failed: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 	}
@@ -522,6 +544,10 @@ func printUsage() {
 	fmt.Println("  prune                           Remove all exited/stopped containers")
 	fmt.Println("  cleanup [grace-period]           Remove completed/stale agents past grace period")
 	fmt.Println("  history                          Show history of removed agents")
+	fmt.Println()
+	fmt.Println("Pipeline:")
+	fmt.Println("  pipeline <repo> <issue> [--dry-run] [--from=<step>]")
+	fmt.Println("                                  Run a pipeline.yml against a repo+issue")
 	fmt.Println()
 	fmt.Println("Coordination:")
 	fmt.Println("  claim <agent> <repo-url> <file>             Claim a file for editing")
