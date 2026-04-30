@@ -70,8 +70,11 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 		return nil, fmt.Errorf("cache setup failed: %w", err)
 	}
 
-	// Get GitHub token from environment or gh CLI
+	// Get GitHub token — check GH_TOKEN, GITHUB_TOKEN, then gh CLI
 	ghToken := os.Getenv("GH_TOKEN")
+	if ghToken == "" {
+		ghToken = os.Getenv("GITHUB_TOKEN")
+	}
 	if ghToken == "" {
 		out, err := exec.Command("gh", "auth", "token").Output()
 		if err == nil {
