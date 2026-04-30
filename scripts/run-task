@@ -1,2 +1,2 @@
 #!/bin/sh
-exec claude --dangerously-skip-permissions -p "$@"
+exec opencode run -m opencode/big-pickle -p "$@"
