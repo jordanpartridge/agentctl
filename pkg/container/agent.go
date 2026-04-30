@@ -286,7 +286,8 @@ func saveAgent(agent *Agent) error {
 	return os.WriteFile(agentMetaPath(agent.Name), data, 0644)
 }
 
-func loadAgent(name string) (*Agent, error) {
+// LoadAgent reads the saved metadata for the named agent.
+func LoadAgent(name string) (*Agent, error) {
 	data, err := os.ReadFile(agentMetaPath(name))
 	if err != nil {
 		return nil, fmt.Errorf("agent not found: %s", name)
@@ -294,4 +295,8 @@ func loadAgent(name string) (*Agent, error) {
 	var agent Agent
 	json.Unmarshal(data, &agent)
 	return &agent, nil
+}
+
+func loadAgent(name string) (*Agent, error) {
+	return LoadAgent(name)
 }
