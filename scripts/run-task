@@ -1,2 +1,15 @@
 #!/bin/sh
-exec opencode run -m opencode/big-pickle -p "$@"
+# Route the agent's Claude CLI through the mesh LLM router (LiteLLM on Odin :8101).
+# Default model: local-code (qwen2.5-coder on Loki GPU); router falls back to cloud-cheap.
+# AGENT_LLM_KEY is injected by agentctl spawn (host env or ~/.agentctl/config.json llm_key)
+# — never baked into the image. Other AGENT_LLM_* vars override per-container.
+if [ -z "$AGENT_LLM_KEY" ]; then
+    echo "run-task: AGENT_LLM_KEY not set — spawn this container via agentctl, or set llm_key in ~/.agentctl/config.json on the host" >&2
+    exit 1
+fi
+export ANTHROPIC_BASE_URL="${AGENT_LLM_BASE_URL:-http://host.containers.internal:8101}"
+export ANTHROPIC_AUTH_TOKEN="$AGENT_LLM_KEY"
+export ANTHROPIC_MODEL="${AGENT_LLM_MODEL:-local-code}"
+export ANTHROPIC_SMALL_FAST_MODEL="${AGENT_LLM_FAST_MODEL:-local-fast}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+exec claude --dangerously-skip-permissions --model "$ANTHROPIC_MODEL" -p "$@"

@@ -30,7 +30,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Install Claude CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Standard agentctl run-task entrypoint (claude variant)
+# Standard agentctl run-task entrypoint (claude CLI via mesh LLM router)
 COPY scripts/run-task /usr/local/bin/run-task
 
 # Create agent user
