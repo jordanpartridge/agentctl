@@ -27,11 +27,20 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install Claude CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude CLI (kept for optional use) and opencode (the run-task harness)
+RUN npm install -g @anthropic-ai/claude-code opencode-ai
 
-# Standard agentctl run-task entrypoint (claude CLI via mesh LLM router)
+# Worker tooling: shell linting, JSON wrangling, GitHub CLI
+RUN apt-get update && apt-get install -y shellcheck jq \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Standard agentctl run-task entrypoint (opencode via mesh LLM router)
 COPY scripts/run-task /usr/local/bin/run-task
+# opencode provider config: mesh router, key from AGENT_LLM_KEY env (no baked secrets)
+COPY scripts/opencode.json /opencode-config/opencode.json
 
 # Create agent user
 RUN useradd -m -s /bin/bash agent \
@@ -59,6 +68,13 @@ RUN mkdir -p /home/agent/.cache/go-mod
 
 # pip: initialize cache directory
 RUN mkdir -p /home/agent/.cache/pip
+
+# opencode: provider config + pre-installed SDK deps (runtime npm fetch inside
+# workers is flaky and polluted the shared cache once already)
+RUN mkdir -p /home/agent/.config/opencode \
+    && cp /opencode-config/opencode.json /home/agent/.config/opencode/opencode.json \
+    && cd /home/agent/.config/opencode \
+    && npm install @ai-sdk/openai-compatible @opencode-ai/plugin
 
 # Set environment variables for cache directories
 ENV COMPOSER_CACHE_DIR="/home/agent/.cache/composer"
