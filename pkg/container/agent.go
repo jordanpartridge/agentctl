@@ -143,19 +143,9 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 	containerID := strings.TrimSpace(string(out))
 	time.Sleep(2 * time.Second)
 
-	// Copy Claude auth config from host
-	home, _ := os.UserHomeDir()
-	claudeJSON := filepath.Join(home, ".claude.json")
-	claudeDir := filepath.Join(home, ".claude")
-
-	if _, err := os.Stat(claudeJSON); err == nil {
-		exec.Command("podman", "cp", claudeJSON, name+":/home/agent/.claude.json").Run()
-		exec.Command("podman", "exec", name, "chown", "agent:agent", "/home/agent/.claude.json").Run()
-	}
-	if _, err := os.Stat(claudeDir); err == nil {
-		exec.Command("podman", "cp", claudeDir, name+":/home/agent/.claude").Run()
-		exec.Command("podman", "exec", name, "chown", "-R", "agent:agent", "/home/agent/.claude").Run()
-	}
+	// No Claude config is copied in: the CLI authenticates to the mesh router
+	// via AGENT_LLM_KEY, and copying host ~/.claude would leak session
+	// transcripts and fire host hooks inside the container.
 
 	// Clone the repository if provided
 	if repo != "" {
