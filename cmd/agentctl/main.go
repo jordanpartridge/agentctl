@@ -530,6 +530,41 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "dispatch":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: agentctl dispatch <name> <repo> (--issue N | --intent TEXT | --intent-file PATH) [--model M] [--branch B] [--image I]")
+			os.Exit(1)
+		}
+		name := os.Args[2]
+		repo := os.Args[3]
+		issue, intent, intentFile, model, branch, image := "", "", "", "", "", ""
+		for i := 4; i < len(os.Args); i++ {
+			switch {
+			case os.Args[i] == "--issue" && i+1 < len(os.Args):
+				issue = os.Args[i+1]
+				i++
+			case os.Args[i] == "--intent" && i+1 < len(os.Args):
+				intent = os.Args[i+1]
+				i++
+			case os.Args[i] == "--intent-file" && i+1 < len(os.Args):
+				intentFile = os.Args[i+1]
+				i++
+			case os.Args[i] == "--model" && i+1 < len(os.Args):
+				model = os.Args[i+1]
+				i++
+			case os.Args[i] == "--branch" && i+1 < len(os.Args):
+				branch = os.Args[i+1]
+				i++
+			case os.Args[i] == "--image" && i+1 < len(os.Args):
+				image = os.Args[i+1]
+				i++
+			}
+		}
+		if err := container.Dispatch(name, repo, issue, intent, intentFile, model, branch, image); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "review":
 		// agentctl review <name>
 		if len(os.Args) < 3 {
