@@ -560,6 +560,10 @@ func main() {
 				i++
 			}
 		}
+		if code, msg := container.ValidateDispatchArgs(issue, intent, intentFile); code != 0 {
+			fmt.Fprintln(os.Stderr, msg)
+			os.Exit(code)
+		}
 		if err := container.Dispatch(name, repo, issue, intent, intentFile, model, branch, image); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
