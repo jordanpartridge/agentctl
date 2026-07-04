@@ -74,7 +74,6 @@ func Dispatch(name, repo string, issue, intent, intentFile, model, branch, image
 	if llmKey := resolveLLMKey(); llmKey != "" {
 		exec.Command("podman", "exec", name, "sh", "-c", fmt.Sprintf("echo 'export AGENT_LLM_KEY=%s' >> /home/agent/.bashrc", llmKey)).Run()
 	}
-	exec.Command("podman", "exec", name, "sh", "-c", fmt.Sprintf("echo 'export AGENT_LLM_MODEL=%s' >> /home/agent/.bashrc", model)).Run()
 
 	ownerRepo := repo
 	if strings.HasPrefix(repo, "https://") {
@@ -108,7 +107,8 @@ func Dispatch(name, repo string, issue, intent, intentFile, model, branch, image
 	exec.Command("podman", "cp", tmp, name+":/home/agent/intent.txt").Run()
 	os.Remove(tmp)
 
-	exec.Command("podman", "exec", "-d", "-w", "/home/agent/workspace/repo", name,
+	exec.Command("podman", "exec", "-d", "-w", "/home/agent/workspace/repo",
+		"-e", "AGENT_LLM_MODEL="+model, name,
 		"sh", "-c", "run-task \"$(cat /home/agent/intent.txt)\" > /home/agent/task.log 2>&1").Run()
 
 	fmt.Printf("dispatched: %s\nmodel: %s   repo: %s   intent: %s\nfollow:  agentctl logs %s   (tails /home/agent/task.log)\nstatus:  agentctl status %s\n",
