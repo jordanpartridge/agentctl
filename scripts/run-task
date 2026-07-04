@@ -1,2 +1,13 @@
 #!/bin/sh
-exec opencode run -m opencode/big-pickle -p "$@"
+# Agentic entrypoint: opencode → mesh LLM router (Odin :8101).
+# opencode speaks native OpenAI format, so tool calls pass through the router
+# intact (the claude-CLI /v1/messages path corrupted tool calls for non-Claude
+# backends — see mesh-status dogfood, 2026-07-03).
+# Default model: local-agent (qwen3:8b on Loki — structured tool calls verified).
+# AGENT_LLM_KEY is injected by agentctl spawn; AGENT_LLM_MODEL overrides per container.
+if [ -z "$AGENT_LLM_KEY" ]; then
+    echo "run-task: AGENT_LLM_KEY not set — spawn this container via agentctl, or set llm_key in ~/.agentctl/config.json on the host" >&2
+    exit 1
+fi
+export AGENT_LLM_KEY
+exec opencode run -m "router/${AGENT_LLM_MODEL:-local-agent}" "$@"

@@ -60,6 +60,29 @@ func SpawnWithIntent(name, repo, branch, intent, image string) (*Agent, error) {
 	return agent, nil
 }
 
+// resolveLLMKey returns the mesh LLM router key for containers: AGENT_LLM_KEY
+// env first, then llm_key in ~/.agentctl/config.json.
+func resolveLLMKey() string {
+	if key := os.Getenv("AGENT_LLM_KEY"); key != "" {
+		return key
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".agentctl", "config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		LLMKey string `json:"llm_key"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.LLMKey
+}
+
 // Spawn creates a new agent container with the given repo cloned
 func Spawn(name, repo, branch, image string) (*Agent, error) {
 	rand.Seed(time.Now().UnixNano())
@@ -92,12 +115,24 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 		"--name", name,
 		"-p", fmt.Sprintf("%d:8080", port),
 		"-e", fmt.Sprintf("GH_TOKEN=%s", ghToken),
+	}
+	// LLM router credentials + overrides for the image's run-task.
+	// The key never lives in the image: host env wins, then ~/.agentctl/config.json llm_key.
+	if llmKey := resolveLLMKey(); llmKey != "" {
+		args = append(args, "-e", fmt.Sprintf("AGENT_LLM_KEY=%s", llmKey))
+	}
+	for _, key := range []string{"AGENT_LLM_BASE_URL", "AGENT_LLM_MODEL", "AGENT_LLM_FAST_MODEL"} {
+		if v := os.Getenv(key); v != "" {
+			args = append(args, "-e", fmt.Sprintf("%s=%s", key, v))
+		}
+	}
+	args = append(args,
 		"-v", fmt.Sprintf("%s/composer:/home/agent/.cache/composer:z", cache),
 		"-v", fmt.Sprintf("%s/npm:/home/agent/.cache/npm:z", cache),
 		"-v", fmt.Sprintf("%s/go-mod:/home/agent/.cache/go-mod:z", cache),
 		"-v", fmt.Sprintf("%s/pip:/home/agent/.cache/pip:z", cache),
 		image,
-	}
+	)
 
 	cmd := exec.Command("podman", args...)
 	out, err := cmd.Output()
@@ -108,19 +143,9 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 	containerID := strings.TrimSpace(string(out))
 	time.Sleep(2 * time.Second)
 
-	// Copy Claude auth config from host
-	home, _ := os.UserHomeDir()
-	claudeJSON := filepath.Join(home, ".claude.json")
-	claudeDir := filepath.Join(home, ".claude")
-
-	if _, err := os.Stat(claudeJSON); err == nil {
-		exec.Command("podman", "cp", claudeJSON, name+":/home/agent/.claude.json").Run()
-		exec.Command("podman", "exec", name, "chown", "agent:agent", "/home/agent/.claude.json").Run()
-	}
-	if _, err := os.Stat(claudeDir); err == nil {
-		exec.Command("podman", "cp", claudeDir, name+":/home/agent/.claude").Run()
-		exec.Command("podman", "exec", name, "chown", "-R", "agent:agent", "/home/agent/.claude").Run()
-	}
+	// No Claude config is copied in: the CLI authenticates to the mesh router
+	// via AGENT_LLM_KEY, and copying host ~/.claude would leak session
+	// transcripts and fire host hooks inside the container.
 
 	// Clone the repository if provided
 	if repo != "" {
