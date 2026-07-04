@@ -215,11 +215,27 @@ func Status(name string) error {
 	fmt.Printf("Repo: %s\n", agent.Repo)
 	fmt.Printf("Branch: %s\n", agent.Branch)
 	fmt.Printf("Created: %s\n", agent.Created.Format(time.RFC3339))
+	taskRun, _ := exec.Command("podman", "exec", name, "sh", "-c", "pgrep -f run-task || pgrep -f opencode || true").Output()
+	if strings.TrimSpace(string(taskRun)) != "" {
+		fmt.Println("task: running")
+	} else {
+		fmt.Println("task: exited")
+	}
+	if _, err := exec.Command("podman", "exec", name, "test", "-f", "/home/agent/task.log").CombinedOutput(); err == nil {
+		last, _ := exec.Command("podman", "exec", name, "tail", "-3", "/home/agent/task.log").Output()
+		fmt.Printf("task.log tail:\n%s", last)
+	}
 	return nil
 }
 
 // Logs shows Claude logs from the agent
 func Logs(name string) error {
+	if _, err := exec.Command("podman", "exec", name, "test", "-f", "/home/agent/task.log").CombinedOutput(); err == nil {
+		cmd := exec.Command("podman", "exec", name, "tail", "-50", "/home/agent/task.log")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
 	cmd := exec.Command("podman", "exec", name, "cat", "/home/agent/claude.log")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
