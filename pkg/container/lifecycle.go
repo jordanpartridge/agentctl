@@ -256,7 +256,7 @@ func CleanupCompleted(gracePeriod time.Duration) ([]string, error) {
 
 	var cleaned []string
 	for _, a := range agents {
-		if a.Lifecycle == StateCompleted && a.Age > gracePeriod {
+		if a.Lifecycle == StateCompleted && !a.ContainerUp && a.Age > gracePeriod {
 			if err := Cleanup(a.Name, "success", 0, nil); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to cleanup %s: %v\n", a.Name, err)
 				continue
