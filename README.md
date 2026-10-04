@@ -6,7 +6,7 @@ Container-based Claude Code agent orchestrator. Spawn isolated Claude agents in 
 
 - **Isolated Environments**: Each agent runs in its own container with a cloned repo
 - **Auto-auth**: Copies your Claude credentials into containers automatically
-- **Ralph Wiggum Mode**: Keeps running Claude until tests pass and changes are committed
+- **Ralph Wiggum Mode**: Keeps running the task until tests pass and changes are committed
 - **Multi-language Support**: Detects and runs tests for Go, Node.js, PHP (Pest), Python, and Rust
 
 ## Requirements
@@ -43,9 +43,9 @@ agentctl run my-agent "Fix the failing tests in src/auth.go" 5
 ```
 
 This will:
-1. Run Claude with the task
+1. Run the task through the image `run-task` entrypoint
 2. Check if tests pass and changes are committed
-3. If not, re-run Claude with context about what's still needed
+3. If not, re-run the task with context about what's still needed
 4. Repeat until done or max attempts reached
 
 ### Check agent status
@@ -108,12 +108,12 @@ podman build -t agent-devbox:latest .
 
 ## How It Works
 
-1. **Spawn** creates a container, copies Claude auth, and clones the repo
-2. **Run** executes Claude with `--dangerously-skip-permissions` in a loop
-3. After each Claude run, it checks:
+1. **Spawn** creates a container and clones the repo
+2. **Run** calls `run-task` in a loop
+3. After each run, it checks:
    - Do tests pass? (auto-detects test runner)
    - Are there uncommitted changes?
-4. If tests fail or changes exist, re-prompts Claude with status
+4. If tests fail or changes exist, re-prompts with status
 5. Continues until success or max attempts
 
 ## License
