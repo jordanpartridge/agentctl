@@ -137,6 +137,9 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 	cmd := exec.Command("podman", args...)
 	out, err := cmd.Output()
 	if err != nil {
+		// A failed start (exit 126: command cannot be invoked) can leave the
+		// name in the Created state, which blocks the next dispatch by name.
+		reapCreatedContainer(name)
 		return nil, fmt.Errorf("spawn failed: %w", err)
 	}
 
@@ -170,6 +173,20 @@ func Spawn(name, repo, branch, image string) (*Agent, error) {
 	}
 	saveAgent(agent)
 	return agent, nil
+}
+
+// reapCreatedContainer removes a container left in the Created state by a
+// failed podman run. Running containers are left alone so a name conflict
+// with a live worker is not destroyed.
+func reapCreatedContainer(name string) {
+	out, err := exec.Command("podman", "inspect", "-f", "{{.State.Status}}", name).Output()
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(string(out)) != "created" {
+		return
+	}
+	exec.Command("podman", "rm", "-f", name).Run()
 }
 
 // Kill stops and removes an agent container

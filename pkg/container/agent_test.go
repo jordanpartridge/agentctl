@@ -3,6 +3,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,6 +112,47 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	}
 	if loaded.Branch != agent.Branch {
 		t.Errorf("Branch = %q, want %q", loaded.Branch, agent.Branch)
+	}
+}
+
+func TestReapCreatedContainerRemovesOnlyCreated(t *testing.T) {
+	bin := t.TempDir()
+	logPath := filepath.Join(bin, "podman.log")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$PODMAN_LOG"
+if [ "$1" = "inspect" ]; then
+  printf '%s\n' "$PODMAN_INSPECT_STATUS"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "podman"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PODMAN_LOG", logPath)
+
+	t.Setenv("PODMAN_INSPECT_STATUS", "created")
+	reapCreatedContainer("husk")
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "rm -f husk") {
+		t.Fatalf("created container not reaped: %s", log)
+	}
+
+	if err := os.WriteFile(logPath, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PODMAN_INSPECT_STATUS", "running")
+	reapCreatedContainer("live")
+	log, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), "rm") {
+		t.Fatalf("running container was reaped: %s", log)
 	}
 }
 
